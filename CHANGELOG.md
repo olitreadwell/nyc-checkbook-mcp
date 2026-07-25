@@ -5,6 +5,126 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - UNRELEASED
+
+HTTP client hardening and correctness fixes for the Checkbook API client, plus
+compliance with the API's two published limits.
+
+Most changes here were built and verified offline with mocks, fixtures, and a
+loopback server. Access was restored on 2026-07-28, and the exceptions verified
+against the live API are noted inline.
+
+### Fixed
+
+- **Requests are rate-paced to the published 1 per second.** The Comptroller's
+  office confirmed on 2026-07-28 that the API allows **1 request per second** and
+  up to **20,000 records per call**. Neither limit is published anywhere on
+  checkbooknyc.com. Exceeding the rate limit does not throttle: their Imperva
+  edge places the client into a blocked state that persists past the burst and
+  returns HTTP 403 to every client on that IP, an ordinary browser included. A
+  morning was spent misdiagnosing that block as an outage upstream.
+
+  All outbound requests are now serialized and spaced at least 1.1s apart,
+  process-wide, covering concurrent callers, retries, and `/smart_search`. This
+  is distinct from the retry backoff below: backoff spaces retries of a single
+  call, while the pacer spaces every call, including unrelated ones issued back
+  to back by different tools. Guarded by `test/pace.test.mjs`, including the
+  concurrent-callers case. **Known limitation:** the pacer is per-process, so two
+  clients running at once can still exceed the limit, and no in-process fix
+  addresses that (tracked in #28).
+- **Redirects are no longer followed (#23).** `fetchWithRetry` now sends
+  `redirect: "manual"`, so a 3xx is surfaced as an error instead of being chased.
+  A single logical API call had been measured fanning out to roughly 40 requests
+  against the Comptroller's edge (39 redirects before a terminal 403), because
+  Node's `fetch` follows redirects by default. Node/undici returns the actual 3xx
+  response for `redirect: "manual"` (nodejs/undici#1193), which the client
+  inspects and rejects.
+- **Retries use exponential backoff instead of zero backoff (#24).** The client
+  previously retried 5xx and network failures immediately, the exact pattern the
+  API operator named as their block trigger. It now uses equal-jitter exponential
+  backoff with an attempt cap (default 3), an overall deadline, and honors
+  `Retry-After` (RFC 9110 §10.2.3) when present. A 4xx is never retried (a 403 is
+  an answer, not a transient failure). The 5xx-plus-network trigger set is
+  unchanged.
+- **An upstream error is never reported as `total_records: 0` (#21).**
+  `callCheckbookApi` now throws `CheckbookApiError` on any failure (network or
+  timeout, a non-2xx HTTP status, an unfollowed redirect, or an API-level failure
+  status) instead of returning a zero-count "success". Every tool routes through
+  the shared `guard()`, so a blocked or unreachable API surfaces as an `isError`
+  result rather than being read by a model as "no records exist." A genuinely
+  empty but successful result still reports `total_records: 0`. Audited across all
+  tools (the `search_*` family, `get_contract`, `get_agency_spending`).
+- **One version string, derived from `package.json` (#22).** The McpServer version
+  (was `1.0.0`), the outbound `User-Agent` (was `1.0.1`), and `package.json` had
+  diverged. The UA is sent on every request and is how the Comptroller's office
+  identifies BetaNYC traffic, so the drift was externally visible. All three now
+  derive from a single `src/version.ts` that reads `package.json` at runtime,
+  chosen over JSON import attributes (which require Node >= 20.6 and would break
+  the declared `engines.node >= 18`).
+
+### Changed
+
+- **`smart_search` is hard-gated off by default (#25).** The checkbooknyc.com
+  `/smart_search` path is not a supported Checkbook NYC API endpoint; it is a
+  WAF-fronted, JavaScript-rendered web page, confirmed with the Comptroller's
+  office. The tool stays registered (so `tools/list` does not change) but fails
+  fast with opt-in guidance and makes no network call unless
+  `CHECKBOOK_ENABLE_SMART_SEARCH=1` is set. It has been removed from the README's
+  described tool surface. Gating rather than removing keeps this a minor release,
+  not a major one.
+- **`max_records` ceiling raised from 1,000 to 20,000.** The old client-side cap
+  silently clamped callers who asked for more and burned extra requests against a
+  scarce budget, the same failure as New-York-City-Budget#42, where a 500-row cap
+  made an FY2026 figure $90.3M low. **Live-verified 2026-07-28:**
+  `max_records: 20000` against FY2026 registered expense contracts returned
+  14,397 records in one response, matching the reported total. The API's own
+  documentation contradicts itself here: the landing page says 20,000 while every
+  domain parameter table says "fewer than 1000" and caps the field at four
+  characters, which cannot express 20000. The landing page is correct.
+- **Default page size stays at 50.** The practical ceiling for an MCP response is
+  the caller's context window, not the API.
+
+### Documentation
+
+- README documents both limits with the date confirmed, replacing "No official
+  limit documented; be reasonable," which is how the block happened. Adds the
+  Comptroller's public technical forum at
+  [groups.google.com/group/checkbooknyc](https://groups.google.com/group/checkbooknyc),
+  with a table routing data and API questions there rather than to this tracker.
+  Adds badges, a table of contents, and Development and Testing sections.
+- New `CONTRIBUTING.md`: where to ask what, respecting the limits, building
+  against documentation rather than guesses, and generative-AI disclosure.
+  Structure follows
+  [uscensusbureau/us-census-bureau-data-api-mcp](https://github.com/uscensusbureau/us-census-bureau-data-api-mcp).
+
+### Notes
+
+- **Coverage gap found while reading the API documentation end to end:** the API
+  exposes ten `type_of_data` domains and this server implements seven.
+  `Spending_OGE`, `Spending_NYCHA`, and `Payroll_NYCHA` are missing, so NYCHA
+  contracts are exposed but neither NYCHA spending nor NYCHA payroll is. Tracked
+  in #28, not fixed here.
+- Epics: #27 (stop violating the limits) and #28 (complete the domain map, prove
+  margin against both ceilings).
+
+### Tests
+
+- New offline suites `test/http-client.test.mjs` and `test/tool-hardening.test.mjs`
+  cover: redirect-not-followed (injected fetch plus a real loopback 302 server),
+  backoff timing, ordering, `Retry-After`, 4xx-not-retried, and the overall
+  deadline (all via a fake clock, no real sleeps); error-never-a-zero-count at both
+  the client and tool layers; the genuine-empty regression; User-Agent tracks the
+  `package.json` version; and the `smart_search` gate in both states.
+- `test/pace.test.mjs` covers the rate pacer: sequential spacing, and the
+  concurrent-callers case that motivated it, where without serialization three
+  callers resolve at once. The pacer is injected as a no-op into the HTTP-client
+  suite (`paceImpl`, alongside the existing `fetchImpl`/`sleepImpl` seams) so
+  those tests still need no real sleeps.
+- **78 tests pass** on Node 26; CI runs the Node 20.x / 22.x matrix.
+- **Live end-to-end check, 2026-07-28:** FY2026 registered expense contracts
+  returned 14,397 records with no error in 1,714ms, the elapsed time confirming
+  the pacer is engaged on the real path.
+
 ## [1.5.0] - UNRELEASED (pending operator live-verification)
 
 > **Do not tag/publish this version until the operator has verified the new
@@ -51,66 +171,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live-confirmed column set and is the exact class (`year`) the live API rejects — a
   bad response column fails the whole request, so it is not re-introduced.
 - README is intentionally untouched (owned by PR #15).
-
-### Fixed — API limit compliance (2026-07-28)
-
-The NYC Comptroller's office confirmed on 2026-07-28 that the API allows **1
-request per second** and up to **20,000 records per call**. Neither limit is
-published anywhere on checkbooknyc.com. Exceeding the rate limit does not
-throttle: their Imperva edge places the client into a blocked state that
-persists past the burst and returns HTTP 403 to every client on that IP,
-including an ordinary browser. A morning was spent misdiagnosing that block as
-an outage on their side.
-
-- **Rate pacing.** All outbound requests are serialized and spaced at least
-  1.1s apart, process-wide, covering concurrent callers, retries, and
-  `/smart_search`. Guarded by `test/pace.test.mjs`, including the
-  concurrent-callers case. **Known limitation:** the pacer is per-process, so
-  two clients running simultaneously can still exceed the limit (tracked in
-  #28).
-- **Retry backoff (#24).** `fetchWithRetry` retried immediately with no delay.
-  It now retries on 429 as well as 5xx, honors `Retry-After` when present, and
-  takes its inter-attempt delay from the pacer.
-- **Redirects are no longer followed (#23).** A redirect chain resolves inside a
-  single `fetch()` where pacing cannot reach it, so one logical call could
-  arrive at the origin as dozens of requests; a 14-hop chain was observed. A 3xx
-  now surfaces as an explicit error naming the `Location`.
-- **User-Agent (#22).** Was hardcoded to `1.0.1` while `package.json` was at
-  `1.5.0`. The office may match on this string in their edge logs.
-
-### Changed
-
-- **`max_records` ceiling raised from 1,000 to 20,000.** The old client-side cap
-  silently clamped callers who asked for more and wasted requests against a
-  scarce budget, the same failure as New-York-City-Budget#42. **Live-verified:**
-  `max_records: 20000` against FY2026 registered expense contracts returned
-  14,397 records in one response, matching the reported total. Note the API's own
-  documentation contradicts itself here — the landing page says 20,000 while every
-  domain parameter table says "fewer than 1000" and caps the field at four
-  characters. The landing page is correct.
-- **Default page size stays at 50.** The practical ceiling for an MCP response is
-  the caller's context window, not the API.
-
-### Documentation
-
-- README: both limits documented with the date confirmed, replacing "No official
-  limit documented; be reasonable." Added the Comptroller's public technical
-  forum at [groups.google.com/group/checkbooknyc](https://groups.google.com/group/checkbooknyc)
-  with a table routing data and API questions there rather than to our tracker.
-  Added badges, a table of contents, and Development and Testing sections.
-- Added `CONTRIBUTING.md`, covering where to ask what, respecting the limits,
-  building against documentation rather than guesses, and generative-AI
-  disclosure. Structure follows
-  [uscensusbureau/us-census-bureau-data-api-mcp](https://github.com/uscensusbureau/us-census-bureau-data-api-mcp).
-
-### Notes on this batch
-
-- **Coverage gap found while reading the docs:** the API exposes ten
-  `type_of_data` domains and this server implements seven. `Spending_OGE`,
-  `Spending_NYCHA`, and `Payroll_NYCHA` are missing. Tracked in #28, not fixed
-  here.
-- Epics: #27 (stop violating the limits) and #28 (complete the map, prove
-  margin).
 
 ## [1.4.0] - unreleased
 
@@ -195,7 +255,8 @@ All new fields were confirmed against the documented [Contracts API](https://www
 - Comptroller data-accuracy disclaimer appended to all tool responses.
 - Acknowledgment of the NYC Comptroller and link to the open-source Checkbook NYC repository.
 
-[Unreleased]: https://github.com/BetaNYC/nyc-checkbook-mcp/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/BetaNYC/nyc-checkbook-mcp/compare/v1.4.0...HEAD
+[1.6.0]: https://github.com/BetaNYC/nyc-checkbook-mcp/compare/v1.4.0...HEAD
 [1.5.0]: https://github.com/BetaNYC/nyc-checkbook-mcp/compare/v1.4.0...HEAD
 [1.3.1]: https://github.com/BetaNYC/nyc-checkbook-mcp/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/BetaNYC/nyc-checkbook-mcp/compare/v1.2.0...v1.3.0

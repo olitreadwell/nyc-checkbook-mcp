@@ -104,7 +104,11 @@ export async function runSearch(
   page_size: number,
   extra?: Record<string, unknown>
 ): Promise<CallToolResult> {
-  const pageSize = Math.min(page_size, 1000);
+  // The API accepts up to 20,000 records per call (confirmed by the
+  // Comptroller's office, 2026-07-28). We previously clamped to 1,000, which
+  // silently capped anyone asking for more and wasted the 1 req/sec budget by
+  // forcing extra calls. Same bug class as New-York-City-Budget#42.
+  const pageSize = Math.min(page_size, MAX_RECORDS_PER_CALL);
   const result = await callCheckbookApi({
     type_of_data: domain,
     records_from: (page - 1) * pageSize + 1,
@@ -127,11 +131,15 @@ export async function runSearch(
 // ─── Shared schema fragments ─────────────────────────────────────────────────
 
 const pageSchema = z.number().optional().default(1).describe("Page number (default: 1)");
+// The API's own ceiling. Note the practical limit for an MCP response is the
+// caller's context window, not this number, which is why the default stays 50.
+export const MAX_RECORDS_PER_CALL = 20_000;
+
 const pageSizeSchema = z
   .number()
   .optional()
   .default(50)
-  .describe("Results per page (default: 50, max: 1000)");
+  .describe("Results per page (default: 50, max: 20000)");
 const fiscalYearSchema = z.string().optional().describe("Fiscal year, e.g. '2024'");
 const agencyCodeSchema = z.string().optional().describe("3-digit agency code");
 

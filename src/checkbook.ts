@@ -142,11 +142,42 @@ export function parseResponse(xmlText: string): ApiResponse {
 
 // ─── Core API call ────────────────────────────────────────────────────────────
 
+// Keep the version in sync with package.json by hand. The Comptroller's office
+// may match on this string in their edge logs, so a stale version makes our
+// traffic harder for them to identify (it read 1.0.1 while package.json was at
+// 1.5.0 until 2026-07-28).
 const USER_AGENT =
-  "betanyc-checkbook-mcp/1.0.1 (github.com/BetaNYC/nyc-checkbook-mcp)";
+  "betanyc-checkbook-mcp/1.5.0 (github.com/BetaNYC/nyc-checkbook-mcp)";
 const REQUEST_TIMEOUT_MS = 60_000;
 
-/** POST with a 60s timeout; retries once on 5xx or network failure. */
+// The Comptroller's office rate-limits this API to 1 request per second
+// (confirmed by their team, 2026-07-28). Exceeding it puts the client into a
+// blocked state at their Imperva edge that persists well beyond the burst, and
+// presents as a 403 on every subsequent request including from a browser.
+const MIN_REQUEST_INTERVAL_MS = 1_100; // 100ms of headroom for clock skew
+
+let paceChain: Promise<void> = Promise.resolve();
+let lastRequestAt = 0;
+
+/**
+ * Serializes every outbound request and spaces them at least
+ * MIN_REQUEST_INTERVAL_MS apart, process-wide. Callers await this before each
+ * fetch, including retries, so no code path can burst.
+ */
+export function pace(): Promise<void> {
+  paceChain = paceChain.then(async () => {
+    const wait = lastRequestAt + MIN_REQUEST_INTERVAL_MS - Date.now();
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    lastRequestAt = Date.now();
+  });
+  return paceChain;
+}
+
+/**
+ * POST with a 60s timeout; retries once on 5xx, 429, or network failure.
+ * Rate-paced: the pacer supplies the inter-attempt backoff, so a retry is
+ * never sooner than MIN_REQUEST_INTERVAL_MS after the attempt it follows.
+ */
 async function fetchWithRetry(
   url: string,
   init: RequestInit
@@ -154,12 +185,26 @@ async function fetchWithRetry(
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
+      await pace();
       const response = await fetch(url, {
         ...init,
+        // Redirects are followed *inside* a single fetch(), so pace() cannot
+        // space them: one logical call could reach the origin as dozens of
+        // requests and blow the 1 req/sec budget on its own (issue #23; a
+        // 14-hop Incapsula chain was observed 2026-07-28). Surface the 3xx
+        // instead of chasing it.
+        redirect: "manual",
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
-      if (response.status >= 500 && attempt === 0) {
+      if ((response.status >= 500 || response.status === 429) && attempt === 0) {
         lastError = new Error(`HTTP ${response.status}: ${response.statusText}`);
+        // Honor Retry-After when they send one; otherwise pace() covers it.
+        const retryAfter = Number(response.headers.get("retry-after"));
+        if (Number.isFinite(retryAfter) && retryAfter > 0) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.min(retryAfter, 30) * 1_000)
+          );
+        }
         continue;
       }
       return response;
@@ -187,6 +232,19 @@ export async function callCheckbookApi(req: ApiRequest): Promise<ApiResponse> {
       total_records: 0,
       records: [],
       error: `Request failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  if (response.status >= 300 && response.status < 400) {
+    return {
+      success: false,
+      total_records: 0,
+      records: [],
+      error:
+        `HTTP ${response.status}: unexpected redirect to ` +
+        `${response.headers.get("location") ?? "an undisclosed location"}. ` +
+        `Not followed, because a redirect chain bypasses this client's rate ` +
+        `pacing. If the API endpoint has moved, update API_ENDPOINT.`,
     };
   }
 

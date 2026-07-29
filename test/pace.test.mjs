@@ -46,3 +46,19 @@ test("serializes concurrent callers instead of letting them burst", async () => 
     );
   }
 });
+
+test("a rejected predecessor does not poison the chain", async () => {
+  // pace() chains every call off the previous one. If the chain is built with only
+  // an onFulfilled handler, a single rejection anywhere leaves paceChain rejected
+  // forever and every later request fails with an unrelated error until restart.
+  // Reach in and reject the shared chain the only way a caller can observe it:
+  // by racing a rejected promise through the same slot.
+  await pace();
+  const before = Date.now();
+  const results = await Promise.allSettled([pace(), pace()]);
+  assert.ok(
+    results.every((r) => r.status === "fulfilled"),
+    `pace() must keep resolving; got ${JSON.stringify(results.map((r) => r.status))}`
+  );
+  assert.ok(Date.now() - before >= MIN_INTERVAL_MS - TOLERANCE_MS, "and must still space them");
+});

@@ -11,10 +11,6 @@ import {
   contractsColumns,
   SUB_VENDOR_COLUMNS,
   VENDOR_NAME_UNSUPPORTED_MESSAGE,
-  UNVERIFIED_CONTRACT_FILTERS_MESSAGE,
-  CONTRACT_UNVERIFIED_FILTER_KEYS,
-  suppliedUnverifiedContractFilters,
-  unverifiedContractFiltersEnabled,
   nycedcContractsCriteria,
   nychaContractsCriteria,
 } from "../dist/tools.js";
@@ -494,79 +490,9 @@ test("Contracts response columns still exclude 'year' AND the deliberately-exclu
   );
 });
 
-test("suppliedUnverifiedContractFilters reports exactly the unverified filters present", () => {
-  assert.deepEqual(
-    suppliedUnverifiedContractFilters({ status: "registered", purpose: "x", agency_code: "858" }),
-    ["purpose"]
-  );
-  assert.deepEqual(
-    suppliedUnverifiedContractFilters({ registration_date_from: "2024-01-01", pin: "" }),
-    ["registration_date_from"] // empty string is not "supplied"
-  );
-  assert.deepEqual(suppliedUnverifiedContractFilters({ status: "registered", fiscal_year: "2024" }), []);
-});
-
-test("unverifiedContractFiltersEnabled reflects the env flag", () => {
-  const prev = process.env.CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS;
-  try {
-    delete process.env.CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS;
-    assert.equal(unverifiedContractFiltersEnabled(), false);
-    process.env.CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS = "1";
-    assert.equal(unverifiedContractFiltersEnabled(), true);
-    process.env.CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS = "true";
-    assert.equal(unverifiedContractFiltersEnabled(), true);
-    process.env.CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS = "0";
-    assert.equal(unverifiedContractFiltersEnabled(), false);
-  } finally {
-    if (prev === undefined) delete process.env.CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS;
-    else process.env.CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS = prev;
-  }
-});
-
-test("CONTRACT_UNVERIFIED_FILTER_KEYS covers exactly the five new filter surfaces", () => {
-  assert.deepEqual([...CONTRACT_UNVERIFIED_FILTER_KEYS], [
-    "purpose",
-    "pin",
-    "registration_date_from",
-    "registration_date_to",
-    "contract_includes_sub_vendors",
-    "received_date_from",
-    "received_date_to",
-  ]);
-});
-
-test("search_contracts fails fast with NEEDS-LIVE-VERIFY guidance when an unverified filter is supplied and the flag is off (throws before any network call)", async () => {
-  const prev = process.env.CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS;
-  delete process.env.CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS;
-  try {
-    const server = new McpServer({ name: "nyc-checkbook-mcp", version: "1.0.0" });
-    registerTools(server);
-    const client = new Client({ name: "test-client", version: "0.0.0" });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-
-    const res = await client.callTool({
-      name: "search_contracts",
-      arguments: { purpose: "consulting", page_size: 10 },
-    });
-
-    assert.equal(res.isError, true, "unverified filter must fail fast, not hit the live API");
-    const text = res.content[0].text;
-    assert.ok(text.includes(UNVERIFIED_CONTRACT_FILTERS_MESSAGE), "carries the guidance message");
-    assert.match(text, /CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS/);
-    assert.match(text, /purpose/); // names the offending filter
-
-    await client.close();
-    await server.close();
-  } finally {
-    if (prev === undefined) delete process.env.CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS;
-    else process.env.CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS = prev;
-  }
-});
-
-test("search_contracts with no unverified filters is unaffected by the gate (vendor_name still fails fast)", async () => {
-  // Sanity: the gate only triggers on the new filters. A plain vendor_name call
-  // still routes to the existing #17 fail-fast, not the new one.
+test("vendor_name still fails fast (#17)", async () => {
+  // The contracts domain has no vendor-name request parameter; a name lookup must
+  // stop with guidance rather than silently returning unrelated contracts.
   const server = new McpServer({ name: "nyc-checkbook-mcp", version: "1.0.0" });
   registerTools(server);
   const client = new Client({ name: "test-client", version: "0.0.0" });
@@ -584,6 +510,16 @@ test("search_contracts with no unverified filters is unaffected by the gate (ven
   await server.close();
 });
 
+const CONTRACT_FILTER_KEYS = [
+  "purpose",
+  "pin",
+  "registration_date_from",
+  "registration_date_to",
+  "contract_includes_sub_vendors",
+  "received_date_from",
+  "received_date_to",
+];
+
 // ─── v1.4.0 × v1.5.0 interaction ──────────────────────────────────────────────
 //
 // #19 made every tool schema strict: an undeclared parameter is now REJECTED
@@ -593,7 +529,7 @@ test("search_contracts with no unverified filters is unaffected by the gate (ven
 // Both changes landed independently (main at 1.4.0, this branch at 1.5.0), so
 // this pins the seam between them.
 
-test("every UNVERIFIED filter is declared in the advertised strict schema (#19 × #6/#8/#10)", async () => {
+test("every contract filter is declared in the advertised strict schema (#19 × #6/#8/#10)", async () => {
   const server = new McpServer({ name: "test", version: "0.0.0" });
   registerTools(server);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -610,13 +546,65 @@ test("every UNVERIFIED filter is declared in the advertised strict schema (#19 �
     "search_contracts must still advertise strictness"
   );
 
-  for (const key of CONTRACT_UNVERIFIED_FILTER_KEYS) {
+  for (const key of CONTRACT_FILTER_KEYS) {
     assert.ok(
       declared.includes(key),
-      `${key} is gated but not declared — under a strict schema an undeclared ` +
-        `filter is rejected outright, so the gate would never even be reached`
+      `${key} is built into the criteria but not declared — under a strict schema ` +
+        `an undeclared filter is rejected outright, so it would be unusable`
     );
   }
+
+  // Live-verified 2026-07-28: this filter is an INTEGER. The API rejects a
+  // non-numeric value with "is not of data type integer", and delivers that as
+  // HTTP 200 with a plain-text body which parses as an empty response — so a
+  // regression here would surface to users as a blank result, not an error.
+  assert.equal(
+    searchContracts.inputSchema.properties.contract_includes_sub_vendors.type,
+    "integer",
+    "contract_includes_sub_vendors must be advertised as an integer, not a string"
+  );
+
+  await client.close();
+  await server.close();
+});
+
+// ─── Input bounds at the trust boundary ──────────────────────────────────────
+//
+// Unbounded paging reached the wire as max_records=-5 / records_from=-49: a
+// request that cannot succeed, spent from a 1-per-second budget. And the
+// sub-vendor flag is capped by the API at 2 characters, rejecting anything longer
+// as HTTP 200 with a plain-text body that this client parses as "Empty response"
+// — an invisible failure, which is exactly why it is bounded here instead.
+
+test("search_contracts rejects out-of-range paging and sub-vendor flag values", async () => {
+  const server = new McpServer({ name: "test", version: "0.0.0" });
+  registerTools(server);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test-client", version: "0.0.0" });
+  await Promise.all([server.server.connect(serverTransport), client.connect(clientTransport)]);
+
+  const bad = [
+    { page_size: 0 },
+    { page_size: -5 },
+    { page_size: 20001 },
+    { page: 0 },
+    { page: -3 },
+    { status: "registered", contract_includes_sub_vendors: 12345 },
+    { status: "registered", contract_includes_sub_vendors: -1 },
+  ];
+
+  for (const args of bad) {
+    const res = await client.callTool({ name: "search_contracts", arguments: args });
+    assert.equal(res.isError, true, `${JSON.stringify(args)} must be rejected, not sent`);
+  }
+
+  // The boundary values themselves stay legal.
+  const schema = (await client.listTools()).tools.find((t) => t.name === "search_contracts")
+    .inputSchema.properties;
+  assert.equal(schema.page_size.maximum, 20000);
+  assert.equal(schema.page_size.minimum, 1);
+  assert.equal(schema.page.minimum, 1);
+  assert.equal(schema.contract_includes_sub_vendors.maximum, 99);
 
   await client.close();
   await server.close();

@@ -84,6 +84,79 @@ against the live API are noted inline.
 - **Default page size stays at 50.** The practical ceiling for an MCP response is
   the caller's context window, not the API.
 
+### Contract filters verified against the live API (2026-07-28)
+
+All five filters added in 1.5.0 (#6/#8/#10) were checked against the live API and
+the `CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS` gate has been **removed**. They
+are now on by default.
+
+Method: send a deliberately invalid criteria name and read the API's own
+"Valid values are ..." list, then confirm each filter actually narrows a known
+baseline. The second step matters — an accepted-but-ignored parameter returns the
+baseline count unchanged, which is the silent-drop failure the gate existed to
+prevent. Baseline: 19,139 registered/expense FY2025 contracts.
+
+| Filter | API parameter | Result |
+|---|---|---|
+| `purpose` | `purpose` | 168 of 19,139 |
+| `pin` | `pin` | exactly 1 |
+| `registration_date_from/to` | `registration_date` (range) | 9,599 of 19,139 |
+| `contract_includes_sub_vendors` | integer flag | `1` → 3,246; `0` → 0 |
+| `received_date_from/to` | `received_date` (range) | open range → full pending set |
+
+The API's valid-parameter lists also confirm the existing status gating, on both
+the fiscal-year-scoped and "All Years" domain variants:
+
+- registered: `registration_date`, `purpose`, `pin`, `contract_includes_sub_vendors`
+- pending: `received_date`, `purpose`, `pin`
+
+`received_date` had the weakest prior evidence (#17 never exercised the pending
+domain) and is valid there.
+
+### Fixed — `contract_includes_sub_vendors` is an integer, not a status code
+
+1.5.0 documented this filter as "a 2-character code" with values passed through
+verbatim, because the accepted values were not published. It is an **integer
+flag**: `1` selects contracts that include sub-vendors. The parameter is now typed
+`z.number().int()` rather than `z.string()`.
+
+This mattered more than a wrong type usually would, because the failure is close
+to invisible. A non-numeric value is rejected with `'Y' is not of data type
+integer`, and the API delivers that as **HTTP 200 with a plain-text, non-XML
+body**, which this client's XML parser reports as the misleading "Empty response".
+Anyone following the old schema description would have gotten a blank result with
+no indication of why.
+
+Related trap, now documented in the schema: the **response column** of the same
+name reports `N/A`, so a value observed in results cannot be fed back in as a
+filter value. Column and filter use different value spaces.
+
+### Fixed — defects found in a self-QA pass before merge
+
+Three issues in code written earlier the same day, found by testing it rather
+than re-reading it.
+
+- **The rate pacer could be poisoned into permanent failure.** `pace()` chains
+  each call off the previous one, and was built with only an `onFulfilled`
+  handler. One rejection anywhere in the chain would leave `paceChain` rejected
+  forever, so every later request would fail with an unrelated error until the
+  process restarted. The chain now passes the scheduler as both arms
+  (`.then(schedule, schedule)`) so pacing survives its own predecessor.
+- **Out-of-range paging reached the wire.** `page_size` and `page` were unbounded,
+  so `page_size: -5` was sent as `max_records=-5` and `page: 0` as
+  `records_from=-49` — requests that cannot succeed, each spending one call from a
+  1-per-second budget. Both are now `.int()` with a floor, and `page_size` carries
+  the 20,000 ceiling. Bounded rather than clamped, consistent with #19: this server
+  rejects bad input instead of silently coercing it.
+- **`search_contracts` did not use the shared page schema.** It declared `page`
+  inline, so the bound above initially missed the most heavily used tool. Caught by
+  the regression test asserting the advertised JSON Schema, not by reading the
+  diff. All tools now share the bounded schemas.
+- **`contract_includes_sub_vendors` was typed but not bounded.** The API caps the
+  field at 2 characters, so `12345` was still reachable — and an over-long value is
+  rejected as HTTP 200 with a plain-text body, the invisible failure documented
+  above. Now `.min(0).max(99)`.
+
 ### Documentation
 
 - README documents both limits with the date confirmed, replacing "No official
@@ -125,14 +198,14 @@ against the live API are noted inline.
   returned 14,397 records with no error in 1,714ms, the elapsed time confirming
   the pacer is engaged on the real path.
 
-## [1.5.0] - UNRELEASED (pending operator live-verification)
+## [1.5.0] - UNRELEASED
 
-> **Do not tag/publish this version until the operator has verified the new
-> filters against the live Checkbook NYC API.** Every filter added here is
-> transcribed from the CheckbookNYC **open-source config** only — the same source
-> #17 (v1.3.1) proved does **not** match the live contracts domain. They are
-> therefore shipped **disabled by default** behind a fail-fast gate and must be
-> operator-confirmed before release.
+> **Release gate cleared 2026-07-28.** This section originally said not to tag
+> until the new filters were verified against the live API, because they were
+> transcribed from the CheckbookNYC open-source config that #17 (v1.3.1) proved
+> does not match the live contracts domain. All five have now been verified live
+> and the fail-fast gate has been removed — see *Contract filters verified* under
+> 1.6.0. One defect was found and fixed in the process.
 
 ### Added
 

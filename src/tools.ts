@@ -96,6 +96,11 @@ export function rangeCriterion(
 
 // ─── Shared search runner ────────────────────────────────────────────────────
 
+// The API's own ceiling. Note the practical limit for an MCP response is the
+// caller's context window, not this number, which is why the default stays 50.
+export const MAX_RECORDS_PER_CALL = 20_000;
+
+
 export async function runSearch(
   domain: DataDomain,
   columns: string[],
@@ -133,13 +138,22 @@ export async function runSearch(
 
 // ─── Shared schema fragments ─────────────────────────────────────────────────
 
-const pageSchema = z.number().optional().default(1).describe("Page number (default: 1)");
-// The API's own ceiling. Note the practical limit for an MCP response is the
-// caller's context window, not this number, which is why the default stays 50.
-export const MAX_RECORDS_PER_CALL = 20_000;
-
+// Bounded, not clamped. #19 established that this server rejects bad input rather
+// than silently coercing it; an unbounded page/page_size reached the wire as
+// max_records=-5 or records_from=-49, spending a request from a 1/sec budget on a
+// call that cannot succeed.
+const pageSchema = z
+  .number()
+  .int()
+  .min(1)
+  .optional()
+  .default(1)
+  .describe("Page number, 1-based (default: 1)");
 const pageSizeSchema = z
   .number()
+  .int()
+  .min(1)
+  .max(MAX_RECORDS_PER_CALL)
   .optional()
   .default(50)
   .describe("Results per page (default: 50, max: 20000)");
@@ -246,14 +260,14 @@ export interface ContractsSearchInput {
   mwbe_category?: string;
   industry?: string;
   contract_type?: string;
-  // ── UNVERIFIED contract filters (issues #6/#8/#10) ──────────────────────────
-  // Config-only, gated at the handler behind CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS.
-  // See CONTRACT_UNVERIFIED_FILTER_KEYS / UNVERIFIED_CONTRACT_FILTERS_MESSAGE below.
+  // ── Contract filters, live-verified 2026-07-28 (issues #6/#8/#10) ───────────
+  // All five live-verified against the API on 2026-07-28 (see CHANGELOG 1.6.0);
+  // the CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS gate they sat behind is gone.
   purpose?: string;
   pin?: string;
   registration_date_from?: string; // registered-only
   registration_date_to?: string; // registered-only
-  contract_includes_sub_vendors?: string; // registered-only
+  contract_includes_sub_vendors?: number; // registered-only, integer flag (1 = has sub-vendors)
   received_date_from?: string; // pending-only
   received_date_to?: string; // pending-only
   include_sub_vendors?: boolean;
@@ -312,17 +326,20 @@ export function contractsCriteria(input: ContractsSearchInput): Criteria[] {
     if (range) criteria.push(range);
   }
 
-  // ── UNVERIFIED contract filters (issues #6/#8/#10) ──────────────────────────
-  // Transcribed from the CheckbookNYC open-source API config
-  // (NYCComptroller/Checkbook, checkbook_api/src/config/contracts.json). NOT
-  // verified against the live API. #17 (v1.3.1, 2026-07-16) proved that same
-  // open-source config does NOT match the live contracts domain (it had
-  // vendor_name→prime_vendor and a bogus `year` column that broke every query),
-  // so every token below is treated as UNVERIFIED and gated at the handler behind
-  // CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS until the operator live-verifies.
-  // `purpose`, `pin`, `registration_date`, and `contract_includes_sub_vendors`
-  // DO appear in #17's live-corroborated VALID_CONTRACTS_CRITERIA set; `received_date`
-  // does not (it is a pending-domain param #17 never exercised).
+  // ── Contract filters, live-verified 2026-07-28 (issues #6/#8/#10) ───────────
+  // Originally transcribed from the CheckbookNYC open-source API config and shipped
+  // disabled, because #17 (v1.3.1) proved that same config does NOT match the live
+  // contracts domain. All five have now been checked against the live API and the
+  // gate is gone. Method: send a deliberately invalid criteria name and read the
+  // API's own "Valid values are ..." list, then confirm each filter actually
+  // narrows a known baseline (an accepted-but-ignored filter returns the baseline
+  // count unchanged — the silent-drop failure this guards against).
+  //
+  // The API's valid-parameter lists also confirm the status gating below:
+  //   registered: ... registration_date, purpose, pin, contract_includes_sub_vendors
+  //   pending:    ... received_date,     purpose, pin
+  // `received_date` had the weakest prior evidence (#17 never exercised the pending
+  // domain) and is valid there.
   //
   // contractsCriteria stays a pure builder (used by unit tests and by the handler
   // only after the gate passes); the gate lives in the search_contracts handler.
@@ -346,13 +363,12 @@ export function contractsCriteria(input: ContractsSearchInput): Criteria[] {
     );
     if (regDate) criteria.push(regDate);
 
-    // issue #8 — sub-vendor status-code filter. Criterion name/type is config-sourced;
-    // the accepted 2-char code enumeration is NOT published, so the raw value is
-    // passed through verbatim rather than validated.
-    if (
-      input.contract_includes_sub_vendors !== undefined &&
-      input.contract_includes_sub_vendors !== ""
-    ) {
+    // issue #8 — sub-vendor flag. Live-verified 2026-07-28: this is an INTEGER,
+    // not the 2-character status code the Comptroller's open-source config implied.
+    // 1 returned 3,246 of 19,139 registered/expense FY2025; 0 returned 0. A
+    // non-numeric value is rejected with "is not of data type integer", delivered
+    // as HTTP 200 with a plain-text body that parses as an empty response.
+    if (input.contract_includes_sub_vendors !== undefined) {
       criteria.push({
         name: "contract_includes_sub_vendors",
         type: "value",
@@ -375,48 +391,6 @@ export function contractsCriteria(input: ContractsSearchInput): Criteria[] {
   return criteria;
 }
 
-// ── UNVERIFIED contract-filter gate (issues #6/#8/#10) ────────────────────────
-// The five filters above are transcribed from the CheckbookNYC open-source config
-// only. They are NOT verified against the live API, which is exactly the failure
-// class #17 fixed (the same config had vendor_name/year wrong and broke every
-// contracts query). Until the operator live-verifies them, supplying any of these
-// makes search_contracts fail fast with guidance instead of firing an unverified
-// token at the live API. The operator enables them, after live-verification, by
-// setting CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS=1 (mirrors the standards §7
-// --operator-authorized pattern). Exported for tests.
-export const CONTRACT_UNVERIFIED_FILTER_KEYS = [
-  "purpose",
-  "pin",
-  "registration_date_from",
-  "registration_date_to",
-  "contract_includes_sub_vendors",
-  "received_date_from",
-  "received_date_to",
-] as const;
-
-/** True when the operator has authorized the unverified contract filters. */
-export function unverifiedContractFiltersEnabled(): boolean {
-  const v = process.env.CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS;
-  return v === "1" || v === "true";
-}
-
-/** Names of unverified contract filters actually supplied on this input. */
-export function suppliedUnverifiedContractFilters(
-  input: Record<string, unknown>
-): string[] {
-  return CONTRACT_UNVERIFIED_FILTER_KEYS.filter(
-    (k) => input[k] !== undefined && input[k] !== ""
-  );
-}
-
-export const UNVERIFIED_CONTRACT_FILTERS_MESSAGE =
-  "search_contracts received filter(s) that are transcribed from the CheckbookNYC " +
-  "open-source config but have NOT been verified against the live API. That config " +
-  "mismatch is exactly what broke every contracts query in v1.3.0 (fixed in #17). " +
-  "These filters are therefore disabled pending operator live-verification. To enable " +
-  "them after confirming each works against the live API, set the environment variable " +
-  "CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS=1. Unverified filter(s) supplied: ";
-
 // ─── smart_search hard-gate (issue #25) ──────────────────────────────────────
 // /smart_search is NOT a supported Checkbook NYC API endpoint. It is a
 // WAF-fronted (Incapsula), JavaScript-rendered web page — confirmed with the NYC
@@ -424,7 +398,7 @@ export const UNVERIFIED_CONTRACT_FILTERS_MESSAGE =
 // it by default. The tool stays registered (so a calling model still discovers it
 // and its guidance, and tools/list is unchanged — no breaking surface change),
 // but by default the handler fails fast WITHOUT any network call. An operator can
-// opt in with CHECKBOOK_ENABLE_SMART_SEARCH=1 (mirrors the unverified-filters gate
+// opt in with CHECKBOOK_ENABLE_SMART_SEARCH=1 (mirrors the standards §7 operator-authorized gate
 // above). Gating rather than removing keeps this a minor, not a major, change.
 
 /** True when the operator has opted into the unsupported smart_search endpoint (issue #25). */
@@ -670,57 +644,55 @@ export function registerTools(server: McpServer): void {
           .optional()
           .describe(
             "Contract purpose keyword (server-side 'contains' match). " +
-              "NEEDS-LIVE-VERIFY: config-sourced, disabled unless " +
-              "CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS=1."
+              "Live-verified 2026-07-28. purpose='software' returned 168 of 19,139 registered/expense FY2025."
           ),
         pin: z
           .string()
           .optional()
           .describe(
-            "Contract PIN / tracking number. NEEDS-LIVE-VERIFY: config-sourced, " +
-              "disabled unless CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS=1."
+            "Contract PIN / tracking number. Live-verified 2026-07-28. An exact PIN returned exactly 1 record."
           ),
         registration_date_from: z
           .string()
           .optional()
           .describe(
             "Registration date range begin (YYYY-MM-DD). Registered contracts only. " +
-              "NEEDS-LIVE-VERIFY: config-sourced, disabled unless " +
-              "CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS=1."
+              "Live-verified 2026-07-28."
           ),
         registration_date_to: z
           .string()
           .optional()
           .describe(
             "Registration date range end (YYYY-MM-DD). Registered contracts only. " +
-              "NEEDS-LIVE-VERIFY: config-sourced, disabled unless " +
-              "CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS=1."
+              "Live-verified 2026-07-28. A 6-month range returned 9,599 of 19,139."
           ),
         received_date_from: z
           .string()
           .optional()
           .describe(
             "Received date range begin (YYYY-MM-DD). Pending contracts only (registered " +
-              "use registration_date). NEEDS-LIVE-VERIFY: config-sourced and the pending " +
-              "domain was not live-tested by #17; disabled unless " +
-              "CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS=1."
+              "use registration_date). Live-verified 2026-07-28. An open-ended range returned the full pending set."
           ),
         received_date_to: z
           .string()
           .optional()
           .describe(
-            "Received date range end (YYYY-MM-DD). Pending contracts only. " +
-              "NEEDS-LIVE-VERIFY: config-sourced, disabled unless " +
-              "CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS=1."
+            "Received date range end (YYYY-MM-DD). Pending contracts only. Live-verified 2026-07-28."
           ),
         contract_includes_sub_vendors: z
-          .string()
+          .number()
+          .int()
+          .min(0)
+          .max(99)
           .optional()
           .describe(
-            "Advanced: sub-vendor status filter — a 2-character code. Registered contracts " +
-              "only. The accepted code values are not published in the Comptroller's API " +
-              "config, so the raw code is passed through verbatim. NEEDS-LIVE-VERIFY: " +
-              "config-sourced, disabled unless CHECKBOOK_ENABLE_UNVERIFIED_CONTRACT_FILTERS=1."
+            "Sub-vendor flag: 1 = contracts that include sub-vendors. Registered contracts " +
+              "only. Live-verified 2026-07-28. 1 returned 3,246 of 19,139 registered/expense FY2025; 0 returned 0. " +
+              "This is an INTEGER, not a status code — the API rejects a non-numeric value " +
+              "with \"is not of data type integer\", and it does so as HTTP 200 with a " +
+              "plain-text (non-XML) body, which parses as an empty response. Note the " +
+              "response column of the same name reports 'N/A', so an observed column value " +
+              "cannot be fed back in as a filter value."
           ),
         include_sub_vendors: z
           .boolean()
@@ -731,7 +703,7 @@ export function registerTools(server: McpServer): void {
               "sub_vendor_mwbe_category, sub_contract_current_amount, etc.) in the response. " +
               "Applies to registered contracts only; ignored for status='pending'."
           ),
-        page: z.number().optional().default(1).describe("Page number for pagination (default: 1)"),
+        page: pageSchema,
         page_size: pageSizeSchema,
       }, { vendor: VENDOR_ALIAS_HINT }),
     },
@@ -739,17 +711,6 @@ export function registerTools(server: McpServer): void {
       guard(() => {
         if (input.vendor_name) {
           throw new Error(VENDOR_NAME_UNSUPPORTED_MESSAGE);
-        }
-        // Fail-fast gate for config-only, live-UNVERIFIED contract filters
-        // (issues #6/#8/#10). Refuse to send an unverified token to the live API
-        // unless the operator has authorized it after live-verification.
-        if (!unverifiedContractFiltersEnabled()) {
-          const supplied = suppliedUnverifiedContractFilters(
-            input as unknown as Record<string, unknown>
-          );
-          if (supplied.length > 0) {
-            throw new Error(UNVERIFIED_CONTRACT_FILTERS_MESSAGE + supplied.join(", ") + ".");
-          }
         }
         return runSearch(
           "Contracts",

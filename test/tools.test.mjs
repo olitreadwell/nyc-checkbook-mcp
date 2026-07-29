@@ -567,3 +567,45 @@ test("every contract filter is declared in the advertised strict schema (#19 × 
   await client.close();
   await server.close();
 });
+
+// ─── Input bounds at the trust boundary ──────────────────────────────────────
+//
+// Unbounded paging reached the wire as max_records=-5 / records_from=-49: a
+// request that cannot succeed, spent from a 1-per-second budget. And the
+// sub-vendor flag is capped by the API at 2 characters, rejecting anything longer
+// as HTTP 200 with a plain-text body that this client parses as "Empty response"
+// — an invisible failure, which is exactly why it is bounded here instead.
+
+test("search_contracts rejects out-of-range paging and sub-vendor flag values", async () => {
+  const server = new McpServer({ name: "test", version: "0.0.0" });
+  registerTools(server);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test-client", version: "0.0.0" });
+  await Promise.all([server.server.connect(serverTransport), client.connect(clientTransport)]);
+
+  const bad = [
+    { page_size: 0 },
+    { page_size: -5 },
+    { page_size: 20001 },
+    { page: 0 },
+    { page: -3 },
+    { status: "registered", contract_includes_sub_vendors: 12345 },
+    { status: "registered", contract_includes_sub_vendors: -1 },
+  ];
+
+  for (const args of bad) {
+    const res = await client.callTool({ name: "search_contracts", arguments: args });
+    assert.equal(res.isError, true, `${JSON.stringify(args)} must be rejected, not sent`);
+  }
+
+  // The boundary values themselves stay legal.
+  const schema = (await client.listTools()).tools.find((t) => t.name === "search_contracts")
+    .inputSchema.properties;
+  assert.equal(schema.page_size.maximum, 20000);
+  assert.equal(schema.page_size.minimum, 1);
+  assert.equal(schema.page.minimum, 1);
+  assert.equal(schema.contract_includes_sub_vendors.maximum, 99);
+
+  await client.close();
+  await server.close();
+});

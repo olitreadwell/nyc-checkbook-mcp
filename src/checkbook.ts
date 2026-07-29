@@ -205,12 +205,18 @@ let lastRequestAt = 0;
  * matters depends on whether the limit is scoped per IP or per client, which is
  * an open question for the Comptroller's office.
  */
+async function schedule(): Promise<void> {
+  const wait = lastRequestAt + MIN_REQUEST_INTERVAL_MS - Date.now();
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  lastRequestAt = Date.now();
+}
+
 export function pace(): Promise<void> {
-  paceChain = paceChain.then(async () => {
-    const wait = lastRequestAt + MIN_REQUEST_INTERVAL_MS - Date.now();
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    lastRequestAt = Date.now();
-  });
+  // .then(schedule, schedule) — the onRejected arm is load-bearing. With only the
+  // onFulfilled arm, one rejection anywhere in the chain leaves paceChain
+  // permanently rejected, and every later request fails forever with an unrelated
+  // error until the process restarts. Pacing must survive its own predecessor.
+  paceChain = paceChain.then(schedule, schedule);
   return paceChain;
 }
 

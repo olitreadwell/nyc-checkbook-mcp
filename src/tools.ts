@@ -96,6 +96,11 @@ export function rangeCriterion(
 
 // ─── Shared search runner ────────────────────────────────────────────────────
 
+// The API's own ceiling. Note the practical limit for an MCP response is the
+// caller's context window, not this number, which is why the default stays 50.
+export const MAX_RECORDS_PER_CALL = 20_000;
+
+
 export async function runSearch(
   domain: DataDomain,
   columns: string[],
@@ -133,13 +138,22 @@ export async function runSearch(
 
 // ─── Shared schema fragments ─────────────────────────────────────────────────
 
-const pageSchema = z.number().optional().default(1).describe("Page number (default: 1)");
-// The API's own ceiling. Note the practical limit for an MCP response is the
-// caller's context window, not this number, which is why the default stays 50.
-export const MAX_RECORDS_PER_CALL = 20_000;
-
+// Bounded, not clamped. #19 established that this server rejects bad input rather
+// than silently coercing it; an unbounded page/page_size reached the wire as
+// max_records=-5 or records_from=-49, spending a request from a 1/sec budget on a
+// call that cannot succeed.
+const pageSchema = z
+  .number()
+  .int()
+  .min(1)
+  .optional()
+  .default(1)
+  .describe("Page number, 1-based (default: 1)");
 const pageSizeSchema = z
   .number()
+  .int()
+  .min(1)
+  .max(MAX_RECORDS_PER_CALL)
   .optional()
   .default(50)
   .describe("Results per page (default: 50, max: 20000)");
@@ -668,6 +682,8 @@ export function registerTools(server: McpServer): void {
         contract_includes_sub_vendors: z
           .number()
           .int()
+          .min(0)
+          .max(99)
           .optional()
           .describe(
             "Sub-vendor flag: 1 = contracts that include sub-vendors. Registered contracts " +
@@ -687,7 +703,7 @@ export function registerTools(server: McpServer): void {
               "sub_vendor_mwbe_category, sub_contract_current_amount, etc.) in the response. " +
               "Applies to registered contracts only; ignored for status='pending'."
           ),
-        page: z.number().optional().default(1).describe("Page number for pagination (default: 1)"),
+        page: pageSchema,
         page_size: pageSizeSchema,
       }, { vendor: VENDOR_ALIAS_HINT }),
     },

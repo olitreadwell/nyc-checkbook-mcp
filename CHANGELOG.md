@@ -131,6 +131,32 @@ Related trap, now documented in the schema: the **response column** of the same
 name reports `N/A`, so a value observed in results cannot be fed back in as a
 filter value. Column and filter use different value spaces.
 
+### Fixed — defects found in a self-QA pass before merge
+
+Three issues in code written earlier the same day, found by testing it rather
+than re-reading it.
+
+- **The rate pacer could be poisoned into permanent failure.** `pace()` chains
+  each call off the previous one, and was built with only an `onFulfilled`
+  handler. One rejection anywhere in the chain would leave `paceChain` rejected
+  forever, so every later request would fail with an unrelated error until the
+  process restarted. The chain now passes the scheduler as both arms
+  (`.then(schedule, schedule)`) so pacing survives its own predecessor.
+- **Out-of-range paging reached the wire.** `page_size` and `page` were unbounded,
+  so `page_size: -5` was sent as `max_records=-5` and `page: 0` as
+  `records_from=-49` — requests that cannot succeed, each spending one call from a
+  1-per-second budget. Both are now `.int()` with a floor, and `page_size` carries
+  the 20,000 ceiling. Bounded rather than clamped, consistent with #19: this server
+  rejects bad input instead of silently coercing it.
+- **`search_contracts` did not use the shared page schema.** It declared `page`
+  inline, so the bound above initially missed the most heavily used tool. Caught by
+  the regression test asserting the advertised JSON Schema, not by reading the
+  diff. All tools now share the bounded schemas.
+- **`contract_includes_sub_vendors` was typed but not bounded.** The API caps the
+  field at 2 characters, so `12345` was still reachable — and an over-long value is
+  rejected as HTTP 200 with a plain-text body, the invisible failure documented
+  above. Now `.min(0).max(99)`.
+
 ### Documentation
 
 - README documents both limits with the date confirmed, replacing "No official

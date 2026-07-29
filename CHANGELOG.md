@@ -52,6 +52,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bad response column fails the whole request, so it is not re-introduced.
 - README is intentionally untouched (owned by PR #15).
 
+### Fixed — API limit compliance (2026-07-28)
+
+The NYC Comptroller's office confirmed on 2026-07-28 that the API allows **1
+request per second** and up to **20,000 records per call**. Neither limit is
+published anywhere on checkbooknyc.com. Exceeding the rate limit does not
+throttle: their Imperva edge places the client into a blocked state that
+persists past the burst and returns HTTP 403 to every client on that IP,
+including an ordinary browser. A morning was spent misdiagnosing that block as
+an outage on their side.
+
+- **Rate pacing.** All outbound requests are serialized and spaced at least
+  1.1s apart, process-wide, covering concurrent callers, retries, and
+  `/smart_search`. Guarded by `test/pace.test.mjs`, including the
+  concurrent-callers case. **Known limitation:** the pacer is per-process, so
+  two clients running simultaneously can still exceed the limit (tracked in
+  #28).
+- **Retry backoff (#24).** `fetchWithRetry` retried immediately with no delay.
+  It now retries on 429 as well as 5xx, honors `Retry-After` when present, and
+  takes its inter-attempt delay from the pacer.
+- **Redirects are no longer followed (#23).** A redirect chain resolves inside a
+  single `fetch()` where pacing cannot reach it, so one logical call could
+  arrive at the origin as dozens of requests; a 14-hop chain was observed. A 3xx
+  now surfaces as an explicit error naming the `Location`.
+- **User-Agent (#22).** Was hardcoded to `1.0.1` while `package.json` was at
+  `1.5.0`. The office may match on this string in their edge logs.
+
+### Changed
+
+- **`max_records` ceiling raised from 1,000 to 20,000.** The old client-side cap
+  silently clamped callers who asked for more and wasted requests against a
+  scarce budget, the same failure as New-York-City-Budget#42. **Live-verified:**
+  `max_records: 20000` against FY2026 registered expense contracts returned
+  14,397 records in one response, matching the reported total. Note the API's own
+  documentation contradicts itself here — the landing page says 20,000 while every
+  domain parameter table says "fewer than 1000" and caps the field at four
+  characters. The landing page is correct.
+- **Default page size stays at 50.** The practical ceiling for an MCP response is
+  the caller's context window, not the API.
+
+### Documentation
+
+- README: both limits documented with the date confirmed, replacing "No official
+  limit documented; be reasonable." Added the Comptroller's public technical
+  forum at [groups.google.com/group/checkbooknyc](https://groups.google.com/group/checkbooknyc)
+  with a table routing data and API questions there rather than to our tracker.
+  Added badges, a table of contents, and Development and Testing sections.
+- Added `CONTRIBUTING.md`, covering where to ask what, respecting the limits,
+  building against documentation rather than guesses, and generative-AI
+  disclosure. Structure follows
+  [uscensusbureau/us-census-bureau-data-api-mcp](https://github.com/uscensusbureau/us-census-bureau-data-api-mcp).
+
+### Notes on this batch
+
+- **Coverage gap found while reading the docs:** the API exposes ten
+  `type_of_data` domains and this server implements seven. `Spending_OGE`,
+  `Spending_NYCHA`, and `Payroll_NYCHA` are missing. Tracked in #28, not fixed
+  here.
+- Epics: #27 (stop violating the limits) and #28 (complete the map, prove
+  margin).
+
 ## [1.4.0] - unreleased
 
 ### Fixed

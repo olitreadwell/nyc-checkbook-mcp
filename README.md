@@ -1,16 +1,48 @@
 # nyc-checkbook-mcp
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/BetaNYC/nyc-checkbook-mcp/blob/main/LICENSE)
+[![CI](https://github.com/BetaNYC/nyc-checkbook-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/BetaNYC/nyc-checkbook-mcp/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@betanyc/nyc-checkbook-mcp.svg)](https://www.npmjs.com/package/@betanyc/nyc-checkbook-mcp)
+
+Bringing New York City's checkbook to AI assistants everywhere.
+
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server for NYC Checkbook data — spending, contracts, budget, payroll, and revenue — powered by the [Checkbook NYC public API](https://www.checkbooknyc.com/data-feeds/api).
 
 Checkbook NYC is the NYC Comptroller's financial transparency platform. It tracks $129B+ in annual city spending across 52,000+ vendors and 188,000+ contracts.
 
 Vibe coded with [Claude](https://claude.ai) by [BetaNYC](https://beta.nyc).
 
+## Contents
+
+* [Getting started](#getting-started)
+* [What it does](#what-it-does)
+* [Tools reference](#tools-reference)
+* [Example queries](#example-queries)
+* [Common agency codes](#common-agency-codes)
+* [Installation](#installation)
+* [Claude Desktop configuration](#claude-desktop-configuration)
+* [API notes and limits](#api-notes-and-limits)
+* [Getting help and the upstream project](#getting-help-and-the-upstream-project)
+* [Contributing](#contributing)
+* [Development](#development)
+* [About BetaNYC](#about-betanyc)
+* [Related BetaNYC MCP servers](#related-betanyc-mcp-servers)
+* [Releases](#releases)
+* [Acknowledgments](#acknowledgments)
+* [License](#license)
+
 ---
 
-## API key
+## Getting started
+
+To use this server you will need:
+
+* Node 18 or later
+* An MCP client, such as Claude Desktop or Claude Code
 
 **No API key is required.** Checkbook NYC is a public API, so this server works out of the box — no signup, no token, no environment variables to set.
+
+Note that the API is rate-limited to **one request per second**. This server enforces that internally, so you do not need to manage it yourself. See [API notes and limits](#api-notes-and-limits).
 
 ---
 
@@ -354,14 +386,89 @@ Or if installed globally:
 
 ---
 
-## API notes
+## API notes and limits
+
+### Limits
+
+The NYC Comptroller's office publishes these limits for the Checkbook NYC API. Both were confirmed directly with their team on 2026-07-28.
+
+| Limit | Value | How this server handles it |
+|---|---|---|
+| Request rate | **1 request per second** | Enforced internally. Every outbound request is serialized and spaced at least 1.1 seconds apart, process-wide, including retries. |
+| Records per call | **20,000** | Accepted as the ceiling for `page_size`. The default stays at 50, because the practical limit for an MCP response is your context window rather than the API. |
+
+**Exceeding the rate limit has consequences beyond a throttle.** The API sits behind an Imperva edge that will place a client into a blocked state that persists well past the burst that caused it, and presents as an HTTP 403 on every subsequent request, including from an ordinary browser on the same network. If you fork this server or write your own client, pace your requests.
+
+This server also declines to follow HTTP redirects. A redirect chain is followed inside a single `fetch()` call, where rate pacing cannot reach it, so one logical API call can arrive at the origin as dozens of requests.
+
+### Other notes
 
 - **Endpoint:** `POST https://www.checkbooknyc.com/api`
 - **Format:** XML (handled internally — tools accept and return JSON)
-- **Rate limits:** No official limit documented; be reasonable
+- **Authentication:** none. Requests identify themselves only by User-Agent.
 - **Coverage:** Citywide agencies + NYCEDC and NYCHA as other government entities (OGE)
 - **Fiscal year:** NYC fiscal year runs July 1 – June 30 (FY2025 = July 2024 – June 2025)
 - **`smart_search` vs structured search:** `smart_search` uses Checkbook's web interface full-text endpoint and is better for product/keyword lookups. Structured tools use the official XML API and are better for precise filtering by agency, amount, or date.
+
+---
+
+## Getting help and the upstream project
+
+**Questions about this MCP server** belong in our [issue tracker](https://github.com/BetaNYC/nyc-checkbook-mcp/issues).
+
+**Questions about Checkbook NYC itself**, the data, the API, or the platform, belong upstream with the Comptroller's office. Checkbook NYC is open source, and the office runs a public technical discussion forum:
+
+| | |
+|---|---|
+| Source code | [github.com/NYCComptroller/Checkbook](https://github.com/NYCComptroller/Checkbook) |
+| Discussion forum | [groups.google.com/group/checkbooknyc](https://groups.google.com/group/checkbooknyc) |
+| Forum by email | `checkbooknyc` at `googlegroups.com` |
+| API documentation | [checkbooknyc.com/data-feeds/api](https://www.checkbooknyc.com/data-feeds/api) |
+
+You can post to the forum by web or by email, and you do not need to be subscribed to post.
+
+Please take questions about data accuracy, field definitions, coverage gaps, and API behavior to the forum rather than to our tracker. They are better answered by the people who maintain the platform, and asking in the open helps everyone else building against the same API.
+
+---
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to report an issue, propose a change, and what we ask of code contributions.
+
+One request specific to this project: **do not add code that queries undocumented endpoints or that would exceed the published rate limit.** This server talks to a public service run by a city agency on a fixed budget, and our access depends on being a well-behaved client.
+
+---
+
+## Development
+
+```bash
+git clone https://github.com/BetaNYC/nyc-checkbook-mcp.git
+cd nyc-checkbook-mcp
+npm install
+npm run build
+```
+
+| Command | What it does |
+|---|---|
+| `npm run build` | Compile TypeScript to `dist/` |
+| `npm run dev` | Compile in watch mode |
+| `npm test` | Build, then run the test suite |
+| `npm start` | Run the built server |
+
+### Testing
+
+Tests use the Node built-in test runner and live in `test/`. They run against recorded fixtures in `test/fixtures/` rather than the live API, so the suite needs no network access and cannot trip the rate limit.
+
+Two areas carry tests worth knowing about before you change them:
+
+- **`test/pace.test.mjs`** guards the rate limiter, including the case where several callers are in flight at once. If you change how requests are dispatched, these are the tests that catch a regression into bursting.
+- **`test/strict-schema.test.mjs`** asserts that unknown tool parameters are rejected rather than silently dropped.
+
+### Source layout
+
+- `src/index.ts` starts the server and registers tools
+- `src/checkbook.ts` holds the API client, request pacing, XML construction, and response parsing
+- `src/tools.ts` holds tool definitions, schemas, and criteria mapping
 
 ---
 

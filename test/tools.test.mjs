@@ -253,8 +253,16 @@ test("rangeCriterion returns undefined when both bounds absent", () => {
 // ─── Contracts field additions (v1.2.0 — issues #8/#9/#10) ───────────────────
 // All tokens confirmed against https://www.checkbooknyc.com/contract-api (2026-07-09).
 
-// Documented sub-vendor / subcontractor columns (#8).
-const DOCUMENTED_SUB_VENDOR_COLUMNS = [
+// Sub-vendor / subcontractor columns (#8), LIVE-VERIFIED 2026-07-31.
+//
+// The previous version of this test asserted SUB_VENDOR_COLUMNS matched the
+// tokens published on /contract-api. That oracle is wrong, and the test passing
+// is exactly why the bug shipped: the docs list `sub_contract_registration_date`,
+// the live API rejects it with 1106, and one invalid column fails the entire
+// request — so every include_sub_vendors=true search errored while this suite was
+// green. The oracle is now the live API's own "Valid values are ..." list for
+// 'Registered Contracts(expense)'. Do not re-derive this from the docs.
+const LIVE_VERIFIED_SUB_VENDOR_COLUMNS = [
   "sub_vendor",
   "sub_vendor_mwbe_category",
   "sub_contract_purpose",
@@ -262,14 +270,24 @@ const DOCUMENTED_SUB_VENDOR_COLUMNS = [
   "sub_contract_current_amount",
   "sub_contract_original_amount",
   "sub_vendor_paid_to_date",
-  "sub_contract_registration_date",
   "sub_contract_industry",
+  "sub_contract_start_date",
+  "sub_contract_end_date",
+  "sub_contract_reference_id",
   "sub_woman_owned_business",
   "sub_emerging_business",
 ];
 
-test("SUB_VENDOR_COLUMNS are exactly the documented sub-vendor tokens (#8)", () => {
-  assert.deepEqual(SUB_VENDOR_COLUMNS, DOCUMENTED_SUB_VENDOR_COLUMNS);
+test("SUB_VENDOR_COLUMNS are exactly the live-verified sub-vendor tokens (#8)", () => {
+  assert.deepEqual(SUB_VENDOR_COLUMNS, LIVE_VERIFIED_SUB_VENDOR_COLUMNS);
+});
+
+test("SUB_VENDOR_COLUMNS excludes the documented-but-rejected sub_contract_registration_date (#8 regression)", () => {
+  // Live API, both registered/expense domain variants (2026-07-31):
+  //   1106: Provided response column 'sub_contract_registration_date' value is
+  //   not allowed for 'Registered Contracts(expense)' domain.
+  // Published on /contract-api, rejected by the API. Same trap as `year` (#16).
+  assert.ok(!SUB_VENDOR_COLUMNS.includes("sub_contract_registration_date"));
 });
 
 test("Contracts default columns include the documented WBE/EBE flags (#9)", () => {

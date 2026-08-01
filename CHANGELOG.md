@@ -5,7 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.6.0] - UNRELEASED
+## [1.6.1] - 2026-07-31
+
+### Fixed
+
+- **`include_sub_vendors: true` errored on every registered-contracts search.**
+  `SUB_VENDOR_COLUMNS` contained `sub_contract_registration_date`, which the live
+  API rejects with error 1106 on **both** registered/expense domain variants, the
+  fiscal-year-scoped one and "All Years". Because one invalid response column
+  fails the entire request, the query errored rather than degrading. Broken from
+  **v1.2.0 through v1.6.0** — every release the feature has existed in.
+
+  The token came from <https://www.checkbooknyc.com/contract-api>, which does list
+  it. **The published documentation overstates the API.** This is the same
+  docs-versus-live trap as `year` in #16, on the sub-vendor side rather than the
+  prime side.
+
+- **Added the three valid sub-vendor columns that were missing:**
+  `sub_contract_start_date`, `sub_contract_end_date`, `sub_contract_reference_id`.
+  `SUB_VENDOR_COLUMNS` is now the complete set of 13 `sub_*` tokens the live
+  registered/expense domain accepts.
+
+### Changed
+
+- **The test oracle for `SUB_VENDOR_COLUMNS` is now the live API, not the docs.**
+  This is the substantive change. The previous test asserted the column list
+  against the published documentation, so **the suite stayed green through two
+  releases while the feature was completely broken.** It now asserts against the
+  API's own "Valid values are ..." list, with an explicit exclusion test for the
+  rejected token mirroring the #16 regression guard.
+
+- Corrected the 1.6.0 heading, which was published reading `UNRELEASED` while the
+  tag and npm both said released.
+
+### Verification
+
+Live-verified 2026-07-31 by the reconciliation session, four paced requests, all
+HTTP 200: the request as shipped returned 1106; the same request minus that token
+succeeded; the All Years variant showed the token absent from its valid list too;
+and the fixed request returned the new columns populated. Independently
+reproduced here on 2026-07-31 with one further call, whose valid-values list
+matched the corrected 13-token set exactly.
+
+Tests: 77 pass, 0 fail.
+
+Refs #8.
+
+## [1.6.0] - 2026-07-29
 
 HTTP client hardening and correctness fixes for the Checkbook API client, plus
 compliance with the API's two published limits.

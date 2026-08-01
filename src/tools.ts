@@ -273,11 +273,21 @@ export interface ContractsSearchInput {
   include_sub_vendors?: boolean;
 }
 
-// Documented sub-vendor / subcontractor response columns (issue #8), confirmed
-// against https://www.checkbooknyc.com/contract-api (2026-07-09). Opt-in only:
-// appended when include_sub_vendors is set on a registered-contracts search.
-// These use the registered/expense column-token naming, so they are not applied
-// to the pending column set (which uses a different token scheme).
+// Sub-vendor / subcontractor response columns (issue #8), LIVE-VERIFIED against
+// the API on 2026-07-31. Opt-in only: appended when include_sub_vendors is set on
+// a registered-contracts search. These use the registered/expense column-token
+// naming, so they are not applied to the pending column set (which uses a
+// different token scheme).
+//
+// The oracle here is the live API's own "Valid values are ..." list, NOT
+// https://www.checkbooknyc.com/contract-api. The published docs list
+// `sub_contract_registration_date`, which the live API rejects with error 1106 on
+// BOTH registered/expense domain variants (fiscal-year-scoped and "All Years").
+// Because one invalid column fails the whole request, that single token made
+// every include_sub_vendors=true search error out in v1.2.0–v1.6.0. Same class of
+// docs-vs-live defect as `year` in #16 — see the exclusion test in tools.test.mjs.
+//
+// This is now the complete set: all 13 sub_* tokens the live domain accepts.
 export const SUB_VENDOR_COLUMNS: string[] = [
   "sub_vendor",
   "sub_vendor_mwbe_category",
@@ -286,8 +296,10 @@ export const SUB_VENDOR_COLUMNS: string[] = [
   "sub_contract_current_amount",
   "sub_contract_original_amount",
   "sub_vendor_paid_to_date",
-  "sub_contract_registration_date",
   "sub_contract_industry",
+  "sub_contract_start_date",
+  "sub_contract_end_date",
+  "sub_contract_reference_id",
   "sub_woman_owned_business",
   "sub_emerging_business",
 ];

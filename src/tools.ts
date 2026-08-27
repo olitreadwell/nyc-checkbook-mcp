@@ -197,9 +197,7 @@ export const VENDOR_NAME_UNSUPPORTED_MESSAGE =
   "search_contracts cannot filter by vendor name: the Checkbook NYC contracts " +
   "API filters vendors only by 'vendor_code', and offers no name→code lookup. " +
   "Options: (1) pass vendor_code if you know it; (2) use search_spending with " +
-  "payee_name to find checks paid to a vendor by name; (3) use smart_search " +
-  "for a name/keyword search (note: the smart_search web endpoint is currently " +
-  "behind a WAF and is often unavailable server-side).";
+  "payee_name to find checks paid to a vendor by name.";
 
 // ─── Strict input schemas (issue #19) ────────────────────────────────────────
 
@@ -621,7 +619,7 @@ export function registerTools(server: McpServer): void {
           .describe(
             "NOT SUPPORTED as a contracts filter — the Checkbook API has no vendor-name " +
               "parameter and no name→code lookup. Supplying this returns actionable guidance " +
-              "(use vendor_code, or search_spending/smart_search for name search). " +
+              "(use vendor_code, or search_spending(payee_name) for name search). " +
               "Prefer vendor_code."
           ),
         vendor_code: z.string().optional().describe("Vendor identification code (the only vendor filter for contracts)"),
@@ -739,7 +737,7 @@ export function registerTools(server: McpServer): void {
     {
       description:
         "Look up a single NYC contract by its contract ID. Returns full contract details. " +
-        "Use this after finding a contract ID via smart_search or search_contracts.",
+        "Use this after finding a contract ID via search_contracts.",
       inputSchema: strictSchema({
         contract_id: z
           .string()

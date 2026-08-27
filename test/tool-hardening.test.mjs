@@ -18,6 +18,7 @@ import {
   registerTools,
   smartSearchEnabled,
   SMART_SEARCH_DISABLED_MESSAGE,
+  VENDOR_NAME_UNSUPPORTED_MESSAGE,
 } from "../dist/tools.js";
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -183,6 +184,37 @@ test("#25 smart_search stays registered in tools/list (gate is not a removal —
     assert.ok(
       tools.some((t) => t.name === "smart_search"),
       "the tool remains discoverable; only its default behavior changed"
+    );
+  } finally {
+    await close();
+  }
+});
+
+// ─── #34: no OTHER tool recommends the disabled smart_search ────────────────
+
+test("#34 no tool other than smart_search recommends the disabled endpoint in its description or input schema", async () => {
+  const { client, close } = await connect();
+  try {
+    const { tools } = await client.listTools();
+    for (const tool of tools) {
+      if (tool.name === "smart_search") continue;
+      // A model reads tools/list, so the property descriptions are interface
+      // text too: a recommendation in inputSchema is as misleading as one in
+      // the top-level description.
+      const haystack = [
+        tool.description,
+        ...Object.values(tool.inputSchema?.properties ?? {}).map((p) => p.description ?? ""),
+      ].join("\n");
+      assert.doesNotMatch(
+        haystack,
+        /smart_search/,
+        `${tool.name} must not recommend the disabled smart_search endpoint (#34)`
+      );
+    }
+    assert.doesNotMatch(
+      VENDOR_NAME_UNSUPPORTED_MESSAGE,
+      /smart_search/,
+      "VENDOR_NAME_UNSUPPORTED_MESSAGE must not recommend the disabled smart_search endpoint (#34)"
     );
   } finally {
     await close();

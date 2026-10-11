@@ -1,10 +1,10 @@
 # betanyc/nyc-checkbook-mcp context
-> refreshed 2026-08-27 | upstream default: main @ 507f904
+> refreshed 2026-10-11 | upstream default: main @ 507f904
 
 ## Identity & policies
 - upstream: betanyc/nyc-checkbook-mcp, default branch `main`, primary language TypeScript, English-first (yes)
 - CLA/DCO: none (no CLA/DCO tooling in CONTRIBUTING or .github)
-- AI-assisted PR policy: allowed, disclosure expected — CONTRIBUTING: "We neither encourage nor prohibit AI coding tools here... If you used a generative tool for any part of a contribution, say so in the pull request."
+- AI-assisted PR policy: allowed but disclosure is expected — CONTRIBUTING: "We neither encourage nor prohibit AI coding tools here... If you used a generative tool for any part of a contribution, say so in the pull request." **This is a hard skip for the pipeline** (`config.json` `ai_policy_check.rules.ai_disclosure_required`, `preflight_scan.critical_filters_hard_skip.ai_disclosure_required`, `engine/loop-trivial.sh` hard filter): a repo that asks contributors to disclose generative-tool use in the PR is not a target, because fork PR bodies and commits carry NO AI mention. Outcome `skip-requires-ai-disclosure`.
 - signed commits required: no (no branch protection on upstream main)
 - PR template: none (`.github/PULL_REQUEST_TEMPLATE.md` absent) → fall back to pipeline 4-section body
 - external tracker: github
@@ -33,6 +33,7 @@
 - Avoid: smart_search's own tool description (SMART_SEARCH_DISABLED_MESSAGE) and its registration MUST stay — the tool stays registered by design (issue #25, no breaking surface change). The fix must only stop OTHER tools' descriptions from recommending it.
 
 ## Gap ledger (dedupe — READ FIRST, never re-pick)
+- `2026-10-11` trivial-fix pass (typos / dead links / stale commands) — skipped, NO PR — outcome `skip-requires-ai-disclosure`. CONTRIBUTING.md `## Generative AI` ("If you used a generative tool for any part of a contribution, say so in the pull request.") requires PR disclosure of generative-tool use, so the config hard gate applies; the pipeline cannot satisfy it on a fork PR (no AI mention allowed). Lesson: the live passport in `vetted-repos.jsonl` still records `ai_disclosure_required: false` (checked 2026-08-24) because `engine/policy-worker.sh`'s detector only matches the literal word `disclos(e|ure)` and misses "say so in the pull request" — real blind spot, logged in `IMPROVEMENTS.md`. Upstream `main` is unchanged @ `507f904` (2026-08-04); fork PRs #1–#3 (2026-08-27) are still open and unmerged, so their gaps remain claimed and must not be re-picked.
 - `2026-08-27` issue #34 runtime text recommending disabled smart_search — pr-opened (fork PR https://github.com/olitreadwell/nyc-checkbook-mcp/pull/1) — lesson: fix only removed OTHER tools' recommendations; smart_search tool's own description + registration must stay (issue #25 no breaking surface). Fork CI green via manual workflow run (Node 20+22); fresh fork's `pull_request` trigger did not fire.
 
 ## Mined gaps (discovered, not yet attempted)

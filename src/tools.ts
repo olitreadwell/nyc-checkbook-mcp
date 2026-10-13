@@ -767,7 +767,12 @@ export function registerTools(server: McpServer): void {
             { name: "category", type: "value", value: category },
             { name: "contract_id", type: "value", value: contract_id },
           ],
-          response_columns: DEFAULT_COLUMNS["Contracts"],
+          // Select columns by status, matching search_contracts: the pending
+          // domain uses a different, incompatible token scheme (contract_id,
+          // purpose, agency, ... vs prime_contract_id, prime_contract_purpose,
+          // ...). Sending the registered set to a pending lookup makes the API
+          // reject the whole request with error 1106 (same class as #16/#8).
+          response_columns: contractsColumns(status, false),
         });
         // No `error` field: an upstream failure throws (issue #21) and is
         // surfaced by guard(), so `records` is only ever a genuine result set.

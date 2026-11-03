@@ -95,7 +95,7 @@ Search registered or pending NYC contracts with structured filters.
 | `contract_type` | string | no | — | Contract type code |
 | `include_sub_vendors` | boolean | no | `false` | Append sub-vendor / subcontractor detail columns (`sub_vendor`, `sub_vendor_mwbe_category`, `sub_contract_current_amount`, …) to the response. Registered `expense` or `all` only; ignored for `pending` and for `category="revenue"`, whose domains list no sub-vendor columns. |
 | `page` | number | no | `1` | Pagination |
-| `page_size` | number | no | `50` | Results per page (max 1000) |
+| `page_size` | number | no | `50` | Results per page (max 20000) |
 
 **Known API limitation:** registered `revenue` searches with `fiscal_year` return no rows. Checkbook NYC reports a match count but sends no records, whatever columns are requested (live, 2026-10-16). The tool refuses that combination with an error and guidance, without sending a request. Search without `fiscal_year` and narrow by date range instead.
 
@@ -155,7 +155,7 @@ Search NYC spending records (checks issued to vendors).
 | `spending_category` | string | no | — | `"c"` capital, `"e"` expense |
 | `mwbe_category` | string | no | — | M/WBE category code |
 | `page` | number | no | `1` | Pagination |
-| `page_size` | number | no | `50` | Results per page (max 1000) |
+| `page_size` | number | no | `50` | Results per page (max 20000) |
 
 *Either `fiscal_year` or `issue_date_from` is required (enforced).
 
@@ -177,7 +177,7 @@ Search NYC budget allocations.
 | `department_code` | string | no | — | Department code |
 | `budget_code` | string | no | — | Budget code |
 | `page` | number | no | `1` | Pagination |
-| `page_size` | number | no | `50` | Results per page |
+| `page_size` | number | no | `50` | Results per page (max 20000) |
 
 ---
 
@@ -199,7 +199,7 @@ Search NYC payroll records. **Requires `fiscal_year` or `calendar_year`.**
 | `amount_min` | number | no | — | Minimum payment amount |
 | `amount_max` | number | no | — | Maximum payment amount |
 | `page` | number | no | `1` | Pagination |
-| `page_size` | number | no | `50` | Results per page |
+| `page_size` | number | no | `50` | Results per page (max 20000) |
 
 *Either `fiscal_year` or `calendar_year` is required (enforced).
 
@@ -220,7 +220,7 @@ Search NYC revenue data.
 | `fund_class` | string | no | — | Fund class code |
 | `funding_class` | string | no | — | Funding class code |
 | `page` | number | no | `1` | Pagination |
-| `page_size` | number | no | `50` | Results per page |
+| `page_size` | number | no | `50` | Results per page (max 20000) |
 
 ---
 
@@ -233,7 +233,7 @@ All spending for a specific agency in a fiscal year.
 | `agency_code` | string | yes | — | 3-digit agency code, e.g. `"858"` for OTI |
 | `fiscal_year` | string | yes | — | e.g. `"2025"` |
 | `page` | number | no | `1` | Pagination |
-| `page_size` | number | no | `50` | Results per page |
+| `page_size` | number | no | `50` | Results per page (max 20000) |
 
 ```
 get_agency_spending("858", "2025")   // OTI/DoITT
@@ -264,7 +264,7 @@ Results carry `apt_pin` only when you do **not** filter by `fiscal_year`. The AP
 | `start_date_from` / `start_date_to` | string | no | — | YYYY-MM-DD |
 | `end_date_from` / `end_date_to` | string | no | — | YYYY-MM-DD |
 | `page` | number | no | `1` | Pagination |
-| `page_size` | number | no | `50` | Results per page (max 1000) |
+| `page_size` | number | no | `50` | Results per page (max 20000) |
 
 ---
 
@@ -293,7 +293,7 @@ Search NYCHA (New York City Housing Authority) contracts (Checkbook domain `Cont
 | `end_date_from` / `end_date_to` | string | no | — | YYYY-MM-DD |
 | `approved_date_from` / `approved_date_to` | string | no | — | Release approved date range (YYYY-MM-DD) |
 | `page` | number | no | `1` | Pagination |
-| `page_size` | number | no | `50` | Results per page (max 1000) |
+| `page_size` | number | no | `50` | Results per page (max 20000) |
 
 ---
 
